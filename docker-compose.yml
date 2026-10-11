@@ -1,0 +1,87 @@
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: buywise-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-buywise}
+      POSTGRES_USER: ${POSTGRES_USER:-buywise}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./sql:/docker-entrypoint-initdb.d:ro
+    networks:
+      - buywise-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-buywise} -d ${POSTGRES_DB:-buywise}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  ollama:
+    image: ollama/ollama:0.6.3
+    container_name: buywise-ollama
+    restart: unless-stopped
+    ports:
+      - "${OLLAMA_PORT:-11434}:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    networks:
+      - buywise-net
+    # Model is pulled on first start via entrypoint helper (see README).
+    # Default model is configurable via OLLAMA_MODEL (default llama3.1:8b).
+    # The LLM layer is provider-independent: agents read LLM_MODEL at runtime
+    # so OpenAI/Anthropic can replace Ollama without changing business logic.
+
+  n8n:
+    image: n8nio/n8n:1.107.4
+    container_name: buywise-n8n
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB_TYPE: postgresdb
+      DB_POSTGRESDB_HOST: postgres
+      DB_POSTGRESDB_PORT: 5432
+      DB_POSTGRESDB_DATABASE: ${POSTGRES_DB:-buywise}
+      DB_POSTGRESDB_USER: ${POSTGRES_USER:-buywise}
+      DB_POSTGRESDB_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY:?N8N_ENCRYPTION_KEY must be set in .env}
+      N8N_HOST: ${N8N_HOST:-localhost}
+      N8N_PORT: 5678
+      N8N_PROTOCOL: http
+      WEBHOOK_URL: ${WEBHOOK_URL:-http://localhost:5678/}
+      GENERIC_TIMEZONE: ${GENERIC_TIMEZONE:-UTC}
+      # BuyWise provider config (no secrets here except via ${} from .env, never committed)
+      TAVILY_API_KEY: ${TAVILY_API_KEY:-}
+      SERPAPI_API_KEY: ${SERPAPI_API_KEY:-}
+      EBAY_ENABLED: ${EBAY_ENABLED:-false}
+      EBAY_APP_ID: ${EBAY_APP_ID:-}
+      EBAY_CERT_ID: ${EBAY_CERT_ID:-}
+      YELP_API_KEY: ${YELP_API_KEY:-}
+      LLM_PROVIDER: ${LLM_PROVIDER:-ollama}
+      LLM_MODEL: ${LLM_MODEL:-llama3.1:8b}
+      OLLAMA_HOST: http://ollama:11434
+      NEGOTIATION_SEND_MODE: ${NEGOTIATION_SEND_MODE:-HUMAN_CONFIRMATION}
+    ports:
+      - "${N8N_PORT:-5678}:5678"
+    volumes:
+      - n8n_data:/home/node/.n8n
+      - ./n8n/workflows:/home/node/.n8n/workflows-import:ro
+      - ./tools:/home/node/.n8n/tools:ro
+      - ./prompts:/home/node/.n8n/prompts:ro
+      - ./schemas:/home/node/.n8n/schemas:ro
+    networks:
+      - buywise-net
+
+networks:
+  buywise-net:
+    driver: bridge
+
+volumes:
+  pgdata:
+  n8n_data:
+  ollama_data:
