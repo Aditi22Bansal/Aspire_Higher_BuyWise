@@ -3,6 +3,8 @@
 *.log
 *.dump
 backups/
+!backups/
+!backups/*.ps1
 n8n_data/
 pgdata/
 node_modules/
