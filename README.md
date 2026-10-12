@@ -1,529 +1,680 @@
-# BuyWise — Phase 1 (Real Data Only)
+# BuyWise — Multi-Agent Procurement Automation
 
-Production-oriented multi-agent procurement automation on **n8n + Docker + PostgreSQL + Ollama**.
-Phase 1 scope: infrastructure, real Tool Gateway, intake, orchestrator, Product + Vendor Research agents, state, audit.
-**Strict rule: no mock/fake data anywhere.** Missing data → `UNAVAILABLE`, never invented.
+**An evidence-driven procurement platform built with n8n, Node.js, PostgreSQL, Docker, and optional LLM reasoning.**
 
-## Deliverables (Phase 1)
+BuyWise automates the procurement lifecycle, from product and vendor research to evidence validation, deterministic scoring, candidate selection, negotiation proposals, re-evaluation, and human approval.
 
+The system combines specialized agents, a shared PostgreSQL database, a tool gateway for external providers, and an interactive procurement console. Every decision is backed by recorded evidence, and missing information is explicitly represented rather than fabricated.
+
+> **Core principle: Real data only. No fabricated products, prices, vendors, reviews, or negotiation outcomes.**
+
+---
+
+## Table of Contents
+
+- [Overview](#overview)
+- [Key Features](#key-features)
+- [Architecture](#architecture)
+- [Procurement Workflow](#procurement-workflow)
+- [Technology Stack](#technology-stack)
+- [Data Integrity and Decision Rules](#data-integrity-and-decision-rules)
+- [Getting Started](#getting-started)
+- [Configuration](#configuration)
+- [Running a Procurement](#running-a-procurement)
+- [Web Console](#web-console)
+- [Testing](#testing)
+- [Security](#security)
+- [Current Limitations](#current-limitations)
+- [Project Structure](#project-structure)
+
+---
+
+## Overview
+
+Traditional procurement involves manually searching for products, comparing vendors, verifying specifications, evaluating prices, and obtaining approvals. These activities can be time-consuming and difficult to audit.
+
+BuyWise addresses this problem through a coordinated, multi-agent architecture that separates research, validation, scoring, decision-making, and approval into distinct stages.
+
+The platform is designed to answer three important questions:
+
+1. **What can we verify?** Collect product, vendor, pricing, and specification evidence from external sources.
+2. **What can we conclude?** Evaluate eligible candidates using deterministic rules and only the evidence available.
+3. **What should happen next?** Recommend proceeding, negotiating, conducting further research, or requesting human intervention.
+
+When the evidence is insufficient, BuyWise reports the limitation instead of manufacturing a confident-looking answer.
+
+### Example use case
+
+A procurement team needs 15 business laptops with 16 GB RAM and a specified per-unit budget.
+
+BuyWise can:
+
+- Collect product listings and supporting research from configured providers.
+- Identify merchants and retrieve prices when verified data is available.
+- Validate mandatory specifications against supporting evidence.
+- Evaluate source quality and completeness.
+- Rank candidates using configurable scoring weights.
+- Determine whether a candidate meets the decision requirements.
+- Prepare an unsent negotiation proposal when the required evidence exists.
+- Re-evaluate verified vendor responses and prepare an approval package.
+
+The system does not guarantee that every request will produce an eligible purchase recommendation. A result such as `INSUFFICIENT_DATA` is intentional when the evidence does not support a reliable decision.
+
+---
+
+## Key Features
+
+### Multi-agent orchestration
+
+- Central procurement orchestrator built with n8n.
+- Specialized product research and vendor research agents.
+- Dedicated quality, comparison, scoring, decision, negotiation, re-evaluation, and approval stages.
+- Persistent lifecycle transitions and agent coordination traces.
+- Bounded retries and revision handling.
+
+### Real provider integrations
+
+- **SerpAPI Google Shopping:** commercial listings, merchants, prices, and available ratings.
+- **Tavily:** web research, product specifications, official product pages, and supporting evidence.
+- **PostgreSQL:** persistent procurement records, offers, evidence, decisions, approvals, and audit history.
+- **Optional LLM reasoning:** advisory output through a configured OpenAI-compatible provider; deterministic rules remain authoritative.
+
+Provider availability depends on valid credentials, network access, API quotas, and the quality of returned results.
+
+### Evidence-based evaluation
+
+- Mandatory specification validation.
+- Source-quality classification.
+- Attribution-gated product ratings.
+- Configurable scoring weights.
+- Missing-data-aware scoring and reproducible rankings.
+- Explicit reasons for blocked decisions and missing evidence.
+
+### Controlled negotiation and approval
+
+- Negotiation proposals are generated only when verified vendor and offer details are available.
+- Vendor communication is not automatically sent.
+- Human-entered demonstration responses are explicitly labelled as simulated.
+- Approval decisions require an authenticated actor and explicit action.
+- Role-based authorization and separation-of-duties checks protect approval operations.
+
+### Interactive procurement console
+
+- Live dashboard backed by PostgreSQL.
+- Procurement request creation and case tracking.
+- Product, vendor, offer, and evidence exploration.
+- Comparison and scoring views.
+- Decision and negotiation workspaces.
+- Re-evaluation and approval workflows.
+- Agent execution traces and chronological audit history.
+- Role-based access for administrators, requesters, procurement officers, approvers, and auditors.
+
+---
+
+## Architecture
+
+```mermaid
+flowchart TD
+    A[Procurement Request] --> B[Web Console / n8n Intake]
+    B --> C[Orchestrator]
+    C --> D[Product Research Agent]
+    C --> E[Vendor Research Agent]
+    D --> F[Tool Gateway]
+    E --> F
+    F --> G[SerpAPI Google Shopping]
+    F --> H[Tavily Web Search]
+    D --> I[(PostgreSQL)]
+    E --> I
+    G --> I
+    H --> I
+    I --> J[Review and Quality]
+    J --> K[Comparison and Scoring]
+    K --> L[Decision Agent]
+    L --> M[Negotiation Proposal]
+    M --> N[Re-evaluation]
+    N --> O[Human Approval]
+    O --> P[Closed / Purchase Handoff]
+    I --> Q[Audit Trail and Agent Trace]
 ```
-docker-compose.yml  .env.example  .gitignore  README.md
-sql/01-schema.sql
-schemas/procurement-request.schema.json  schemas/product-research-output.schema.json  schemas/vendor-research-output.schema.json
-prompts/product-research.system.md  prompts/vendor-research.system.md
-tools/_lib/envelope.js
-tools/{web-search,product-search,product-details,vendor-search,price-retrieval}/{adapter.js,interface.json}
-n8n/workflows/{00-orchestrator-buywise,10-agent-product-research,20-agent-vendor-research,90-util-state-manager,92-util-tool-gateway,93-util-logger}.json
-tests/test_phase1.py  tests/gateway.unavailable.test.mjs
-```
 
-Phase 2 (NOT implemented): Review & Quality, Comparison, Decision, Negotiation, Re-evaluation, Approval agents.
+### Architectural principles
 
-## Quickstart
+- **Separation of responsibilities:** research, scoring, decision-making, and approval are distinct stages.
+- **Persistent state:** procurement records and lifecycle transitions are stored in PostgreSQL.
+- **Controlled tool access:** external data retrieval goes through dedicated adapters and gateway workflows.
+- **Deterministic decisions:** eligibility, scoring, and approval gates do not depend on an LLM's opinion.
+- **Traceability:** records retain supporting evidence, source URLs, timestamps, and decision reasons where available.
+- **Human oversight:** negotiation sending and purchasing execution are not performed automatically.
+
+---
+
+## Procurement Workflow
+
+BuyWise implements a controlled procurement lifecycle.
+
+| Stage | Responsibility |
+|---|---|
+| Intake | Validate the request and identify missing or ambiguous requirements. |
+| Product research | Discover relevant products and collect supporting specifications. |
+| Vendor research | Identify merchants and retrieve commercial evidence. |
+| Review and quality | Evaluate source quality, evidence completeness, and rating attribution. |
+| Comparison | Compare eligible candidates using available criteria. |
+| Scoring | Calculate reproducible scores using configured weights. |
+| Decision | Determine whether to proceed, negotiate, research further, or stop. |
+| Negotiation | Prepare a proposal when the required verified evidence exists. |
+| Re-evaluation | Recalculate scores using verified revised terms or vendor responses. |
+| Approval | Generate an approval package and record an explicit human decision. |
+| Closure | Close the case following an authorized outcome. |
+| Purchase handoff | Permit a handoff only when the required real approval conditions are satisfied. |
+
+The lifecycle is enforced in both application code and PostgreSQL. Invalid state transitions are rejected and audited.
+
+---
+
+## Technology Stack
+
+| Technology | Purpose |
+|---|---|
+| n8n | Workflow orchestration and agent coordination |
+| Node.js | Tool adapters, validation, scoring, decision logic, and backend services |
+| Express.js | Procurement console API and server |
+| PostgreSQL | Persistent storage, lifecycle enforcement, and audit records |
+| Docker Compose | Local infrastructure and service management |
+| SerpAPI | Commercial product listings and available pricing evidence |
+| Tavily | Web research and supporting source discovery |
+| React | Interactive procurement interface |
+| JavaScript / TypeScript | Backend tooling and frontend implementation |
+| Python | Automated policy, schema, and integration validation |
+| Optional OpenAI-compatible LLM | Advisory reasoning, when configured |
+
+Ollama is optional and is not required for deterministic procurement processing. The system can operate without a configured LLM.
+
+---
+
+## Data Integrity and Decision Rules
+
+BuyWise is designed to prioritize evidence quality over artificially complete results.
+
+### 1. Missing data is never fabricated
+
+Missing information is represented as `UNAVAILABLE`, `unavailable`, or `NULL`, depending on the field and storage contract.
+
+The system does not invent:
+
+- Product listings or merchant identities.
+- Prices, currencies, or exchange rates.
+- Product ratings or review counts.
+- Vendor contact details.
+- Delivery estimates or warranty terms.
+- Vendor responses or negotiation outcomes.
+- Human approval decisions.
+
+### 2. Offers require verified commercial evidence
+
+An offer is persisted only when the required evidence includes:
+
+- Product identity.
+- Merchant identity.
+- Numeric price.
+- Explicitly known currency.
+- Source URL.
+
+A search result alone does not guarantee that an eligible offer can be created.
+
+### 3. Missing criteria are excluded from scoring
+
+The scoring engine calculates the weighted average using criteria for which evidence is available:
+
+`overall_score = sum(weight × score) / sum(available weights)`
+
+Missing criteria are excluded from both the numerator and denominator rather than automatically receiving a zero.
+
+The system records criteria used, missing criteria, and the effective weight total. If there is no valid scoring basis, the overall score remains `NULL`.
+
+### 4. Currency is never guessed
+
+Budget comparisons require verified prices in the same currency as the procurement budget. Currency conversion is not performed without a configured exchange-rate source.
+
+### 5. Mandatory requirements are enforced
+
+Mandatory specifications must have sufficient supporting evidence. Unknown or unverified mandatory requirements can block a candidate from proceeding.
+
+### 6. Human approval is explicit
+
+Approval requires an authenticated actor and an explicit outcome. A timeout, missing response, or generated proposal does not count as approval.
+
+Demo responses remain marked as simulated and cannot authorize a real purchase handoff.
+
+---
+
+## Getting Started
+
+### Prerequisites
+
+Install the following:
+
+- Docker Desktop with Docker Compose.
+- Node.js and npm.
+- Python 3.
+- PostgreSQL client tools, if you want to inspect the database manually.
+- API credentials for the providers you intend to use.
+
+The commands below assume the repository is located at `D:\flexi` on Windows and that PowerShell is being used.
+
+### 1. Configure environment variables
+
+From the repository root:
 
 ```powershell
-Copy-Item .env.example .env   # then fill POSTGRES_PASSWORD + N8N_ENCRYPTION_KEY (required)
-docker compose up -d postgres ollama
-docker exec buywise-ollama ollama pull llama3.1:8b
-docker compose up -d n8n
-# n8n UI: http://localhost:5678 — import n8n/workflows/*.json in dependency order:
-# 90, 92, 93, 10, 20, then 00. Reconnect credentials (below), then activate 00.
+Copy-Item .env.example .env
 ```
 
-## Credentials — where each one goes (never in code/prompts/git)
+Generate and configure a strong `POSTGRES_PASSWORD` and `N8N_ENCRYPTION_KEY` in `.env`.
 
-| Credential | Get it at | Enter it in |
-|---|---|---|
-| `POSTGRES_PASSWORD`, `N8N_ENCRYPTION_KEY` | you generate | `.env` only |
-| `TAVILY_API_KEY` | https://app.tavily.com (free 1000 credits/mo) | `.env` + n8n HTTP Header Auth `Authorization: Bearer <key>` on gateway Tavily nodes |
-| `EBAY_APP_ID` / `EBAY_CERT_ID` | https://developer.ebay.com (free app) | `.env` + n8n HTTP Basic Auth on `eBay OAuth Token` node |
-| `SERPAPI_API_KEY` (optional fallback) | https://serpapi.com (free 250/mo) | `.env` only; system works without it |
-| `YELP_API_KEY` (Phase 2 reviews) | https://developer.yelp.com | `.env` only (stored for Phase 2) |
-| Gmail OAuth2 (Phase 2 negotiation) | Google Cloud Console → n8n Gmail node | n8n Gmail credential on future negotiation workflow; sender identity comes from that credential, never hard-coded |
-| Ollama | none (local) | n8n Ollama credential host `http://ollama:11434`, model from env `LLM_MODEL` (default `llama3.1:8b`) |
+Add provider keys only when available. Never commit `.env` to Git.
 
-Missing provider key → gateway returns `{data_status: UNAVAILABLE, retryable: false}`, orchestrator continues partial or escalates. Amazon/Flipkart are excluded in Phase 1 (no scraping, no fabricated prices).
-
-## API
-
-`POST http://localhost:5678/webhook/procurement-request` with `schemas/procurement-request.schema.json`, e.g.
-`{"requirement":"15 office laptops 16GB RAM","quantity":15,"budget":20000,"currency":"USD","mandatory_specs":{"ram_gb":16}}`.
-
-## Tests (no fake data)
+### 2. Start the infrastructure
 
 ```powershell
-python3 tests/test_phase1.py            # JSON validity, schemas, validation rules, SQL, workflow wiring
-node tests/gateway.unavailable.test.mjs # empty creds -> UNAVAILABLE for all 5 adapters, exclusion enforced
-docker compose config                   # compose validity
+docker compose up -d postgres n8n
 ```
 
-## Validation report (filled at implementation time — see final message)
-
-Services, schema, workflows, Ollama, adapters, env/credentials, provider connection results, problems.
-
-## Provider strategy (post-upgrade)
-
-**SerpAPI Google Shopping** (primary commercial: listings, merchants, prices, ratings) +
-**Tavily** (web research, specs, official pages, warranty/shipping evidence).
-**eBay is NOT REQUIRED** and inactive (`EBAY_ENABLED=false`); code retained for audit
-history. Gmail **UNAVAILABLE** (send gate stays blocked), Ollama **UNAVAILABLE**
-(all logic deterministic). Offers exist only with product + merchant + numeric price +
-known currency + source URL (`tools/_lib/commercial.js`); SerpAPI ratings attach to
-products same-subject only; currencies come from explicit symbols/codes, never guessed.
+Check the n8n health endpoint:
 
 ```powershell
-node tests/commercial_run.mjs   # fresh end-to-end procurement (uses .env keys silently)
-node tests/serpapi.unit.test.mjs; node tests/commercial.unit.test.mjs
-node tests/provider.integration.test.mjs; python3 tests/test_provider_policy.py
-```
-
-### n8n cross-workflow references (important)
-
-Repo workflow files reference sub-workflows by **name** (portable across installs).
-n8n 1.107 resolves sub-workflow calls only by internal **ID** at runtime, so after
-importing or re-importing workflows, run:
-
-```powershell
-python3 tools/n8n_relink.py   # rewrites every execute/toolWorkflow ref to live IDs (idempotent)
-```
-
-then restart n8n (`docker compose restart n8n`). Never paste workflow IDs into repo
-files — they are instance-specific.
-
-Objective: prove Phase 1 retrieves and persists real procurement data with zero mocks.
-No Phase 2 agents. Ollama is NOT required (orchestrator is LLM-free; see below).
-
-### 1. Configure credentials (never hardcode, never commit)
-
-```powershell
-Copy-Item .env.example .env   # only when you have keys to put in it
-```
-
-Fill in `.env` (all optional except Postgres/n8n core; missing provider key = `UNAVAILABLE` by design):
-
-| Variable | Source | Status values in reports |
-|---|---|---|
-| `TAVILY_API_KEY` | https://app.tavily.com (free 1000 credits/mo) | `configured` / `absent` |
-| `EBAY_APP_ID` + `EBAY_CERT_ID` | https://developer.ebay.com (free app) | `configured` / `absent` |
-| `SERPAPI_API_KEY` | https://serpapi.com (optional fallback) | `configured` / `absent` |
-| `YELP_API_KEY` | deferred to Phase 2 | `DEFERRED` |
-
-Mirror provider keys into n8n Credentials for the gateway workflow: HTTP Header Auth
-(`Authorization: Bearer <TAVILY_API_KEY>`) on Tavily nodes, HTTP Basic Auth
-(`EBAY_APP_ID`/`EBAY_CERT_ID`) on the `eBay OAuth Token` node. `.env` is gitignored;
-secret values are never printed in reports.
-
-### 2. Start services
-
-```powershell
-docker compose up -d postgres n8n   # ollama intentionally excluded on low-RAM hosts
 Invoke-WebRequest http://localhost:5678/healthz -UseBasicParsing
 ```
 
-### 3. Run provider connectivity + failure tests
+Ollama is intentionally omitted because it is not required for the deterministic pipeline.
+
+### 3. Import n8n workflows
+
+Open:
+
+**http://localhost:5678**
+
+Import the workflow JSON files in dependency order, where applicable:
+
+1. `90-util-state-manager`
+2. `92-util-tool-gateway`
+3. `93-util-logger`
+4. `10-agent-product-research`
+5. `20-agent-vendor-research`
+6. `00-orchestrator-buywise`
+
+Reconnect the required n8n credentials after importing.
+
+If your n8n installation requires workflow references to be relinked after import, run:
 
 ```powershell
-node tests/live_providers.test.mjs    # real requests; SKIPPED_NOT_CONFIGURED per provider without keys
-node tests/gateway.failure.test.mjs   # invalid creds vs real endpoints -> must be UNAVAILABLE
-node tests/gateway.unavailable.test.mjs
-python3 tests/test_phase1.py
-python3 tests/test_phase15_offline.py
+python tools/n8n_relink.py
+docker compose restart n8n
 ```
 
-Without credentials the correct live result is `0 PASS, 0 FAIL, N SKIPPED_NOT_CONFIGURED`
-and any procurement run must yield `0` products/offers with `UNAVAILABLE` — never invented data.
+Activate the main orchestrator only after its dependencies and credentials have been configured.
 
-### 4. Run the real procurement test
+### 4. Start the web console
 
-With keys configured, execute the documented test input (business laptops, 16GB/512GB,
-budget ₹80,000/unit) through `productSearch`/`vendorSearch` adapters or the n8n
-orchestrator (`00-orchestrator-buywise`), then inspect PostgreSQL:
+```powershell
+cd D:\flexi\web
+npm install
+npm start
+```
+
+Open:
+
+**http://localhost:8080**
+
+For the multi-user console, bootstrap the first administrator using the project's account creation script:
+
+```powershell
+$env:ADMIN_USERNAME = "owner"
+$env:ADMIN_PASSWORD = "choose-a-long-secret"
+node scripts/create-admin.mjs
+```
+
+Choose a strong password and do not reuse this example value.
+
+---
+
+## Configuration
+
+### Environment variables
+
+| Variable | Purpose | Required |
+|---|---|---|
+| `POSTGRES_PASSWORD` | PostgreSQL authentication | Yes |
+| `N8N_ENCRYPTION_KEY` | Encrypt n8n credentials | Yes |
+| `TAVILY_API_KEY` | Web research | Optional |
+| `SERPAPI_API_KEY` | Commercial product search | Optional |
+| `EBAY_APP_ID` | Legacy eBay integration | Optional |
+| `EBAY_CERT_ID` | Legacy eBay integration | Optional |
+| `YELP_API_KEY` | Future review integration | Deferred |
+| `LLM_PROVIDER` | Optional advisory reasoning provider | Optional |
+| `LLM_API_URL` | OpenAI-compatible endpoint | Optional |
+| `LLM_API_KEY` | Hosted LLM authentication | Optional |
+| `LLM_MODEL` | Configured model name | Optional |
+| `PORT` | Web server port; defaults to `8080` | Optional |
+| `N8N_WEBHOOK_URL` | Procurement intake webhook | Optional |
+
+SerpAPI and Tavily are the primary research providers. eBay is retained for integration history but is not required by the current provider strategy.
+
+Provider keys must be configured in the appropriate environment and n8n credentials. The presence of an environment variable alone does not guarantee that the corresponding n8n credential has been connected.
+
+---
+
+## Running a Procurement
+
+### Submit a request through the API
+
+The intake endpoint is:
+
+`POST http://localhost:5678/webhook/procurement-request`
+
+Example request:
+
+```json
+{
+  "requirement": "Business laptops with 16GB RAM and 512GB SSD",
+  "quantity": 15,
+  "budget": 80000,
+  "currency": "INR",
+  "mandatory_specs": {
+    "ram_gb": 16,
+    "storage_gb": 512
+  }
+}
+```
+
+The budget is expressed per unit for this example. Ensure the request follows the repository's current procurement schema.
+
+The API validates the request and starts the workflow when the orchestrator and its dependencies are available.
+
+### Monitor execution
+
+1. Open the procurement console.
+2. Create a new procurement request.
+3. Submit the requirements and budget.
+4. Open the resulting case using its actual ID.
+5. Inspect products, vendors, offers, quality evidence, comparison results, and the decision.
+6. Review the agent trace and audit trail to understand the outcome.
+
+Research duration depends on provider response times, API quotas, and the number of candidates discovered.
+
+### Inspect persisted data
+
+Check the number of products:
 
 ```powershell
 docker exec buywise-postgres psql -U buywise -d buywise -c "SELECT count(*) FROM products;"
-docker exec buywise-postgres psql -U buywise -d buywise -c "SELECT offer_id,unit_price,currency,data_status,source_url,retrieved_at FROM offers LIMIT 5;"
 ```
 
-Every LIVE row must trace `record -> provider -> source_url -> retrieved_at`.
-Missing fields stay `"unavailable"`; currencies are never converted (no FX source configured).
-n8n executions: n8n UI -> Executions (filter `00-orchestrator-buywise`).
-
-### 5. Security precautions
-
-Keys live in `.env` + n8n Credentials only. `tests/test_phase15_offline.py` includes a
-repo secret scan; the sole `tvly-…` string in the repo is the deliberate
-`tvly-INVALID-KEY-FOR-FAILURE-TEST` sentinel (not a real credential).
-
-## Phase 2A — Review, Quality, Comparison & Deterministic Scoring
-
-Pipeline: `products → 40-agent-review-quality → 50-agent-comparison → 60-util-scoring-engine → ranked candidates`.
-No Decision/Negotiation/Approval agents. Works WITHOUT any LLM: tiers, completeness,
-scoring, ranking are deterministic code (canonical libs `tools/_lib/source_quality.js`,
-`tools/_lib/evidence.js`, `tools/_lib/scoring.js`; n8n Code nodes embed the same algorithms).
-
-### Missing-data policy (renormalization, never zero-fill)
-
-A criterion with no verified evidence is EXCLUDED from numerator AND denominator;
-weights renormalize over available criteria. Stored per row: `criteria_used`,
-`criteria_missing`, `effective_weight_total`. `overall_score = null` means "no basis",
-never "bad". Verified live: excluding missing beats naive zero-fill.
-
-### Scoring formula
-
-`overall = Σ(wᵢ·sᵢ) / Σ(wᵢ)` over available criteria only. Component normalizers:
-rating/scale (explicit numeric rating only), budget 1/0 only with same-currency verified
-price (no FX → no verdict), source tier + spec completeness always computable.
-Ranking: score desc, nulls last, confidence desc, `product_id` asc — reproducible.
-
-### Source-quality policy (evidence strength, NOT product quality)
-
-HIGH manufacturer 1.0 (dell/hp/lenovo…), HIGH major retailer 0.9, MEDIUM specialist 0.8 /
-publication 0.6 / video 0.4, LOW social/unknown 0.3. Overridable via
-`scoring_configs.source_quality_map`. Weak sources stay visible as LOW, never deleted/upgraded.
-
-### Review policy (attribution-gated)
-
-A rating attaches to a candidate ONLY with (a) product-context tokens from the
-requirement and (b) exactly one rating pattern in the snippet (multiple patterns =
-ambiguous list page → rejected; platform ratings misattributed → rejected with reason
-in `quality_evidence`). Otherwise `review_rating`/`review_count` stay `unavailable` (NULL).
-
-### Weight configuration
-
-Defaults in `tools/_lib/scoring.js` (`DEFAULT_WEIGHTS`); per-procurement overrides via
-procurement `weights` → `scoring_configs` table. Unknown/negative/non-numeric weights rejected.
-
-### Run + tests
+Inspect recent offers:
 
 ```powershell
-$env:PGPASSWORD="<postgres pw>"; node tests/phase2a_run.mjs   # live 9-product pipeline
-node tests/scoring.unit.test.mjs        # 57 deterministic unit tests (fixtures, never LIVE)
-python3 tests/test_phase2a_policy.py    # schemas, workflows, migration, secret scan (excludes .env)
+docker exec buywise-postgres psql -U buywise -d buywise -c "SELECT offer_id, unit_price, currency, data_status, source_url, retrieved_at FROM offers LIMIT 5;"
 ```
 
-### Current limitations
+A real record should be traceable to its provider, source URL, and retrieval timestamp wherever those fields are required by the relevant record contract.
 
-`price/vendor/delivery/warranty/payment_terms/budget_compliance` are `unavailable`
-whenever no verified provider data exists (current: no offers — eBay PENDING_APPROVAL).
-Rankings on thin evidence rank *evidence quality*, not product goodness.
+If no verified offers are available, the system must not manufacture them to complete the workflow.
 
-## Phase 2B — Decision Agent + Real Negotiation Agent
+---
 
-New: `65-agent-decision`, `70-agent-negotiation`; orchestrator routes
-`compared → decided → negotiating` (negotiating ONLY when a real negotiation opens;
-`reevaluated/pending_approval/closed` untouched — Phase 2C). No LLM anywhere on this host.
+## Web Console
 
-### Decision gates (`tools/_lib/decision.js`, deterministic)
+The BuyWise Procurement Console provides a user interface over the live backend and PostgreSQL database.
 
-Rank order scan: scoring basis present → verified mandatory specs (unverified mandatory
-BLOCKS, never assumed; violations skip the candidate) → verified same-currency offer →
-contact channel → budget verdict. Outcomes: `PROCEED` (verified, in-budget, no blocks),
-`NEGOTIATE` (verified over-budget + real channel), `INSUFFICIENT_DATA` (otherwise —
-the honest result for thin datasets). Scores still come only from the scoring engine.
+### Dashboard
 
-### Negotiation rules (`tools/_lib/negotiation.js`, never simulated)
+Displays procurement totals, case states, provider health, recent activity, decisions, and agent executions.
 
-A row exists ONLY for verified vendor + offer + price + contact. Targets derive ONLY
-from explicit budget/allowed-discount (never assumed %). Drafts use supplied facts only.
-`human_confirmation=true` required to send; Phase 2B persists `do_not_send=true` and
-never sends. `NOT_READY` persists NOTHING (event `evaluated_not_ready` only, no fake rows).
-Duplicates blocked by `UNIQUE(procurement_id, offer_id)`.
+### New Procurement
 
-### Run + tests
+Provides a validated intake wizard for requirements, quantity, budget, currency, mandatory specifications, delivery constraints, and execution mode.
+
+REAL mode is the default. DEMO mode requires an explicit reason.
+
+### Case Workspace
+
+Organizes procurement information into focused sections:
+
+- Overview
+- Agent Workflow
+- Products
+- Vendors & Offers
+- Quality & Evidence
+- Comparison & Scoring
+- Decision
+- Negotiation
+- Re-evaluation
+- Approval
+- Agent Trace
+- Audit Trail
+
+The frontend displays backend results rather than independently calculating product rankings or decisions.
+
+### Multi-user access
+
+The console supports the following roles:
+
+| Role | Responsibility |
+|---|---|
+| Admin | Manage accounts, roles, and authorization limits |
+| Requester | Create and edit owned procurement requests |
+| Officer | Manage research, proposals, and procurement operations |
+| Approver | Approve, reject, or request changes within authorized limits |
+| Auditor | Read-only access to permitted procurement records |
+
+The application implements server-side authorization, session cookies, CSRF protection for mutations, login rate limiting, password hashing, approval freshness checks, and separation-of-duties controls.
+
+The server binds to `127.0.0.1` by default. It is intended for local use and must not be exposed to a network without appropriate security configuration.
+
+---
+
+## Testing
+
+Run the tests appropriate to the changes you make.
+
+### Phase 1 validation
 
 ```powershell
-$env:PGPASSWORD="<postgres pw>"; node tests/phase2b_run.mjs              # live decision run
-node tests/phase2b.integration.test.mjs  # post-state: INSUFFICIENT_DATA, 0 rows, decided
-node tests/decision.unit.test.mjs; node tests/negotiation.unit.test.mjs
-python3 tests/test_phase2b_policy.py
+python tests/test_phase1.py
+node tests/gateway.unavailable.test.mjs
+docker compose config
 ```
 
-### Current limitations
-
-No verified offers/vendors on the live dataset → `INSUFFICIENT_DATA` + `NOT_READY`
-(by design, not failure). Gmail sending + vendor responses + re-evaluation + approval
-are Phase 2C. eBay PENDING_APPROVAL, Ollama UNAVAILABLE.
-
-## Phase 2C — Re-evaluation Agent + Approval Agent (final phase)
-
-`80-agent-reevaluation` recomputes via `60-util-scoring-engine` (called twice:
-original + revised) on VERIFIED vendor responses only (email/API/portal with price,
-currency, timestamp, evidence). No response → `WAITING_FOR_VENDOR`, no rows, no
-transition. Savings need two real same-currency prices or stay unavailable.
-`90-agent-approval` builds the 19-section package (gaps stay `unavailable`) and
-pauses at a human-in-the-loop Wait webhook; only explicit `APPROVED`/`REJECTED`/
-`CHANGES_REQUESTED` with a real actor identity counts — never absence/timeout/views.
-Closure only on explicit outcomes (or the explicit `decided→closed` PROCEED rule,
-default off). No purchase orders, payments, or execution — the system ends at CLOSED.
+### Provider connectivity and failure handling
 
 ```powershell
-$env:PGPASSWORD="<postgres pw>"; node tests/phase2c_run.mjs              # live gate run
-node tests/phase2c.integration.test.mjs  # reevaluations 0, approvals 0, still decided
-node tests/reevaluation.unit.test.mjs; node tests/approval.unit.test.mjs
-python3 tests/test_phase2c_policy.py
+node tests/live_providers.test.mjs
+node tests/gateway.failure.test.mjs
+node tests/gateway.unavailable.test.mjs
 ```
 
-Canonical libs: `tools/_lib/reevaluation.js` (reuses scoring, never duplicates),
-`tools/_lib/approval.js` (package/actor/closure guards). Migration `05-phase2c-schema.sql`
-(`reevaluations`, `approvals`, `approval_events`; states through `closed`).
+Live provider tests require valid credentials and network connectivity. Providers without credentials should be reported as `SKIPPED_NOT_CONFIGURED`, not treated as successful live integrations.
 
-### Known live-data outcome
-
-Dataset `ac07e16d` has no negotiations/responses → `NOT_ELIGIBLE` + `NOT_CREATED`,
-state stays `decided`, production tables byte-identical (verified programmatically).
-Thin-evidence honesty is the feature, not a gap: eBay PENDING_APPROVAL, Ollama
-UNAVAILABLE, Gmail not connected.
-
-## Demo mode (local end-to-end demonstration, no vendor contact)
-
-REAL mode is the default and still blocks without verified contact channels.
-DEMO is explicit only (`selectMode` requires a reason) and stored per case
-(`procurement_cases.mode`, `negotiations.mode`, `reevaluations.mode`,
-`approvals.mode`). Flow: `decided → demo_negotiating → demo_response_received →
-reevaluated → pending_approval → closed`, reusing the existing Decision,
-Negotiation (proposal only, `do_not_send`), Re-evaluation (same engine),
-Approval (same human gate), and scoring engine — no new agents.
-
-Rules: human-entered responses only (n8n `75-demo-response` form or explicit
-operator values), always `DEMO_HUMAN_ENTERED` / `LOCAL_DEMO_INPUT` /
-`vendor_response_verified=false`; `VENDOR_RESPONSE_RECEIVED` and
-`vendor_response_verified=true` can never appear on demo records (unit-pinned);
-nothing is ever sent. Migration `06-demo-mode.sql` (`demo_responses` table).
+### Commercial data pipeline
 
 ```powershell
-$env:PGPASSWORD="<postgres pw>"
-node tests/commercial_run.mjs   # fresh REAL case first (stops honestly at decided)
-$env:DEMO_PROC="<id>"; $env:DEMO_OFFER="<offer>"; $env:DEMO_PRICE=48500; $env:DEMO_CCY="INR"
-$env:DEMO_DECISION="APPROVED"; $env:DEMO_ACTOR="Demo Operator"; node tests/demo_run.mjs
-node tests/demo.unit.test.mjs; python3 tests/test_demo_policy.py
+node tests/commercial_run.mjs
+node tests/serpapi.unit.test.mjs
+node tests/commercial.unit.test.mjs
+node tests/provider.integration.test.mjs
+python tests/test_provider_policy.py
 ```
 
-## Provider strategy (SerpAPI primary, eBay NOT REQUIRED)
+The end-to-end procurement run uses configured providers. It may correctly stop without eligible offers if the live evidence is insufficient.
 
-**SerpAPI Google Shopping** (listings, merchants, prices, ratings) + **Tavily** (web
-research, specs, official pages, warranty/shipping evidence). **eBay is NOT REQUIRED**
-and inactive (`EBAY_ENABLED=false`); its code is retained for audit history only.
-Gmail **UNAVAILABLE** (send gate stays blocked), Ollama **UNAVAILABLE** (all logic
-deterministic). An `offer` row exists only with product + merchant + numeric price +
-known currency + source URL (`tools/_lib/commercial.js`); SerpAPI ratings attach to
-products same-subject only; currencies come from explicit symbols/codes, never guessed.
-
-Live findings (documented, not worked around): SerpAPI defaults to Indian locale
-(`gl=in`, `hl=en`; overridable via `SERPAPI_GL`/`SERPAPI_HL`/`SERPAPI_LOCATION`) —
-pass locale params for regional catalogs; INR budgets vs non-INR offers correctly
-yield unavailable budget compliance (no FX). Shopping `link` fields are
-Google redirect URLs, so product identity uses the SerpAPI product cluster id first
-and never URL-strips redirectors (see `productIdentity`). Specs verify only from
-explicit single-value statements on same-subject pages (`extractSpecs`); contact
-emails only from the vendor's own domain (`contactHostMatches`) — third-party
-directories are evidence, never channels. Decision scans all ranks for the first
-fully-clearing candidate; stored `blocking_reasons` always cite rank-1 evidence.
+### Scoring, decisions, and negotiation
 
 ```powershell
-$env:PGPASSWORD="<postgres pw>"; node tests/commercial_run.mjs   # fresh end-to-end procurement (keys via .env, never printed)
-node tests/serpapi.unit.test.mjs; node tests/commercial.unit.test.mjs
-node tests/provider.integration.test.mjs; python3 tests/test_provider_policy.py
+node tests/scoring.unit.test.mjs
+node tests/decision.unit.test.mjs
+node tests/negotiation.unit.test.mjs
 ```
 
-## Website — BuyWise Procurement Console (interactive demo UI)
-
-`web/` is a small Express app over the **real** PostgreSQL database. No mocks, no fake
-data, no email sending. Everything shown comes from live tables; everything written
-goes through the same validation rules as the n8n agents. Rankings, scores and
-decisions are always read from backend rows — the frontend never computes them.
-
-### Start commands (exact)
+### Re-evaluation, approval, and demo mode
 
 ```powershell
-docker compose up -d postgres n8n          # database + orchestrator (from D:\flexi)
-cd D:\flexi\web; npm install               # first time only
-npm start                                  # serves http://localhost:8080
+node tests/reevaluation.unit.test.mjs
+node tests/approval.unit.test.mjs
+node tests/demo.unit.test.mjs
+
+python tests/test_phase2a_policy.py
+python tests/test_phase2b_policy.py
+python tests/test_phase2c_policy.py
+python tests/test_demo_policy.py
 ```
 
-Website URL: **http://localhost:8080**
+Run only test files that exist in your checked-out repository version.
 
-New-procurement submissions proxy to the live n8n intake webhook
-(`http://localhost:5678/webhook/procurement-request`, override with `N8N_WEBHOOK_URL`),
-so n8n must be up for that button. All other actions read/write Postgres directly
-with parameterized queries. The server binds `127.0.0.1` — local demo tool, no auth;
-do not expose it to a network without adding auth first.
+### Web console
 
-### Environment variables (website only)
-
-| Variable | Default | Purpose |
-|---|---|---|
-| `PORT` | `8080` | website listen port |
-| `N8N_WEBHOOK_URL` | `http://localhost:5678/webhook/procurement-request` | live intake webhook |
-| `PGHOST` / `POSTGRES_PORT` / `POSTGRES_DB` / `POSTGRES_USER` / `POSTGRES_PASSWORD` | `localhost` / `.env` values | Postgres connection (`.env` in `D:\flexi`, never committed, never sent to the browser) |
-
-Provider API keys are never read by the web server and never leave the server
-(presence-only flags in `/api/providers`; `safeJson` guard refuses secret-shaped
-output; verified by `npm test` in `web/`).
-
-### Pages
-
-- **Dashboard** (`#/`) — live totals, active/closed/awaiting-approval counts, recent
-  runs, provider connectivity & health, recent agent executions, recent decisions,
-  prominent “New Procurement” action. Honest empty states when no cases exist.
-- **New procurement** (`#/new`) — validated wizard (product/category, requirements,
-  quantity, budget, currency default INR, mandatory specs, delivery, warranty,
-  constraints, REAL default / DEMO explicit with required reason). Submits the real
-  intake and navigates to the new case by its actual ID.
-- **Case workspace** (`#/case/:id`) — opens on an Overview card (requirement,
-  quantity/budget in ₹, live counts, decision + short reason, reasoning mode, one
-  state-dependent primary action, copyable short ID) above a collapsed 9-step
-  stepper. Each step shows one result line + reason + `View details` (lazy-loaded,
-  never all expanded at once); scoring is labelled deterministic code.
-  Deep browsing stays in the tab routes (`#/case/:id/:tab`): Overview, Agent
-  Workflow, Products (search/sort/paged), Vendors & Offers (Merchant/Product/
-  Price-in-₹/Evidence/`View source`, search/sort/paged, unique-merchant count),
-  Quality & Evidence, Comparison & Scoring (top-3 cards + collapsible full
-  criteria), Decision (outcome hero), Negotiation, Re-evaluation, Approval
-  (explicit DEMO–NOT VERIFIED banner in DEMO mode), Agent Trace (filters for
-  agent/type/status/reasoning mode, revision loops grouped, raw JSON collapsed),
-  Audit Trail.
-
-### Live demonstration guide (one laptop, no vendor contact)
-
-1. Open http://localhost:8080 → Dashboard → **+ New Procurement**.
-2. Fill the form (REAL is default), submit → case page opens with the real case ID.
-3. Wait ~1–3 min while live research runs (page auto-refreshes; never invents
-   progress). Watch the nine-stage workflow move from evidence as rows land.
-4. Tabs Products → Vendors & Offers → Quality → Comparison & Scoring → Decision:
-   inspect real rows; missing data stays `unavailable`. Expect `INSUFFICIENT_DATA`
-   on thin datasets — that is the honest result, shown with blockers.
-5. Negotiation tab → switch the case to DEMO (reason required) → Generate
-   negotiation proposal (from a real verified offer; `sent:false`,
-   `vendors_contacted:0`, `do_not_send:true`).
-6. Re-evaluation tab → enter the hypothetical response manually (price, currency,
-   delivery, warranty, payment, notes) — stored as `DEMO_HUMAN_ENTERED` /
-   `LOCAL_DEMO_INPUT` / `vendor_response_verified=false` with the persistent
-   “Simulation only …” notice → **Run re-evaluation** → before/after comparison.
-7. Approval tab → Create approval package → APPROVE / REJECT / REQUEST CHANGES
-   with explicit confirmation and actor name (DEMO-labeled in demo mode).
-8. Audit Trail tab → full chronological history with raw JSON.
-9. Refresh the browser at any point — the same procurement ID resumes from the
-   database; repeated refreshes create nothing.
-
-### Website tests
-
-```powershell
-cd D:\flexi\web; npm test            # 21 live read-only + pure unit tests (needs server up)
-node test/e2e-demo.mjs               # full scripted E2E: REAL intake → research → DEMO → re-eval → APPROVE → closed
-```
-
-`node test/e2e-demo.mjs` stops honestly with `HONEST STOP` when live research yields
-no verified offers (nothing to negotiate — correct REAL behavior). A completed
-reference run is case `679a22df-df99-46b1-8abc-08bd8a0ba09b` (full research →
-DEMO → APPROVED → closed, 14 coordination messages) — open it in the case
-workspace to present the full journey instantly.
-
-## Multi-user access (local RBAC)
-
-The website requires login. Sessions are opaque server-side tokens in
-`HttpOnly; SameSite=Lax` cookies (12 h), CSRF-checked on mutations, rate-limited
-logins (5 per 5 min per account; `LOGIN_RATE_WINDOW_MS`/`LOGIN_RATE_MAX` env
-overrides). Passwords are scrypt-hashed (`tools/_lib/passwords.mjs`); hashes
-never leave the server. Roles: **admin** (accounts, roles, limits),
-**requester** (create + edit own), **officer** (pipeline, demo, packages, edit
-any), **approver** (decide; separation-of-duties, authorization limits, and
-version-freshness enforced), **auditor** (read-only). All enforcement is
-server-side.
-
-Bootstrap (local, no default password):
 ```powershell
 cd D:\flexi\web
-$env:ADMIN_USERNAME = "owner"; $env:ADMIN_PASSWORD = "choose-a-long-secret"
-node scripts/create-admin.mjs   # refuses if any user exists
+npm test
+node test/e2e-demo.mjs
 ```
-Then log in at http://localhost:8080 and create the team in **Admin**.
-Requests carry `owner_user_id` + `version`; edits bump the version and audit a
-diff; approvals record `request_version`, decide only on a fresh package, and
-refuse self-approval, over-limit, and stale decisions. REAL approval on an
-`INSUFFICIENT_DATA` case without eligible offers is blocked (422). Single
-tenant by design (no org tables) — see `docs/RETROSPECTIVE.md` §5.12.
 
-## CA3 evaluation (multi-agent system evidence)
+The end-to-end demo may stop honestly when a real procurement has no eligible offers. That behavior is expected: the application must not invent commercial evidence merely to complete a demonstration.
 
-Artifacts in `docs/`: `PROJECT_SYNOPSIS.md`, `DESIGN_DOCUMENT.md`,
-`INPUT_OUTPUT_DEFINITIONS.md`, `AGENT_EXECUTION_TRACE.md`, `CA3_DEMO_GUIDE.md`,
-`CA3_RUBRIC_EVIDENCE.md`, `CA3_GAP_ANALYSIS.md`.
+---
 
-- **Coordination trace**: every pipeline run persists task/evidence/revision/
-  decision/escalation messages to `agent_messages` (migration
-  `sql/07-agent-coordination.sql`, contract `tools/_lib/coordination.js`).
-  Inspect per case: website **Agent Trace** tab or
-  `GET /api/cases/:id/trace`. Reference loops: case `b604039e-…`
-  (revision_request → follow-up → decision recompute), case `679a22df-…`
-  (full research → DEMO → APPROVED → closed, 14 messages).
-- **Optional LLM reasoning (advisory only)**: set `LLM_PROVIDER=openai-compatible`
-  + `LLM_API_URL` + `LLM_API_KEY` + `LLM_MODEL` in `.env` (never logged/stored).
-  Decision/Comparison agents attach one validated advisory; gates and scores stay
-  deterministic; failures resolve to labelled `DETERMINISTIC_FALLBACK`.
-  Indicator: `GET /api/reasoning-mode` + website sidebar/Pipeline/Trace chips.
-  Default (no creds): `LLM_UNAVAILABLE`. No live hosted credentials are
-  configured — live LLM execution is unverified (stub-verified only).
-- **Bounded adaptation**: max 1 auto-replan per case
-  (`MAX_REPLANS_PER_CASE`), 1 tool retry, 15 s provider timeouts, 20 kb message
-  cap; agents have no vendor-contact tool; scoring engine stays read-only.
-- **Tests**: `node tests/coordination.unit.test.mjs` (24 contract tests),
-  `node tests/llm.unit.test.mjs` (24 provider/contract tests, mocked — no network),
-  `node tests/passwords.unit.test.mjs` (12 hashing/validation tests),
-  `cd web; npm test` (36: API + 14-test auth matrix covering unauthenticated,
-  roles, CSRF, SoD, stale, limits, deactivation, idempotency, rate limits).
-  Regression: scoring/demo/decision/negotiation/reevaluation/approval/commercial/
-  serpapi unit suites (257 pass) + `tests/test_demo_policy.py` + `tests/test_phase1.py`.
-- **Manual steps before demo day**: (1) no n8n reimport needed — the
-  `Op Persist Offers` fix is already applied to the running instance (verified:
-  fresh intake → real offers → decided); only reimport
-  `n8n/workflows/00-orchestrator-buywise.json` + `python3 tools/n8n_relink.py` +
-  restart n8n if n8n is ever reinstalled; (2) keep `docker compose up -d postgres
-  n8n` and `npm start` (web) running through the evaluation window.
-- **GitHub (individual-contribution marks)**: push this repo, add collaborators
-  + `examstudio-bot`, each member sets their own git identity and commits their
-  own work steadily with PRs/reviews. Do not rewrite or reattribute history.
+## Security
 
-## Procurement lifecycle (enforced in backend code)
+BuyWise applies security controls to credentials, procurement records, workflow execution, and approval operations.
 
-States (existing names kept): `created → product_done → vendor_done →
-quality_done → compared → decided → {negotiating | demo_negotiating →
-demo_response_received} → reevaluated → pending_approval → {closed |
-changes_requested} → purchase_handoff`. Side branches: `partial` (thin n8n
-results), `failed`/`needs_human_intervention` (recoverable). Every website
-status write goes through `transitionStatus()` (`web/server.js`) against the
-map in `tools/_lib/lifecycle.js`; illegal attempts get HTTP 409 plus a
-`transition_rejected` audit event (previously silent no-ops). `closed` and
-`purchase_handoff` are terminal. Closure requires a recorded APPROVED/REJECTED;
-handoff requires a closed case whose latest approval is APPROVED + REAL (a
-DEMO approval is never purchasing authorization).
+- Keep API keys and database passwords in `.env` or supported credential stores.
+- Never hard-code secrets in source code, prompts, workflow exports, or documentation.
+- Never commit `.env` or live credentials to version control.
+- Keep provider keys on the server; do not expose them to the browser.
+- Use parameterized database queries.
+- Enforce permissions on the server rather than relying on frontend visibility.
+- Require explicit human confirmation for approval and preserve the identity of the actor.
+- Keep DEMO records visibly distinct from real vendor responses.
+- Back up PostgreSQL and test the documented restoration procedure.
+- Configure TLS, secure cookies, appropriate CORS policies, and least-privilege database roles before any network deployment.
 
-Decision outcomes (deterministic, `tools/_lib/decision.js`): `PROCEED`
-(recommendation supported), `NEGOTIATE` (verified over-budget + channel),
-`NO_ELIGIBLE_OFFERS` (empty ranking / all mandatory-failed / zero offers),
-`RESEARCH_REQUIRED` (blocked only by fillable gaps), `INSUFFICIENT_DATA`
-(structural blocks). Intake is validated with structured errors + clarification
-warnings (`created` = draft-equivalent); research starts only after validation.
+BuyWise does not execute purchases, transfer funds, or automatically send negotiation emails as part of the documented workflow.
 
-Eligibility (`eligibility` table, `sql/13-lifecycle.sql`): mandatory
-PASS/FAIL/UNKNOWN per product×requirement with evidence, same normalized rules
-as the Decision Agent; preferences never gate. Scoring engine
-`SCORING_RULES_VERSION=1.0.0` stamped on `scoring_configs`/`comparisons` rows;
-recompute-from-stored-inputs tested. REAL proposals are unsent internal drafts
-(`POST /api/cases/:id/negotiations`, officer/admin); negotiation never sends.
+---
 
-Access: login required everywhere except login/health/reasoning-mode. Roles
-admin/officer/approver/auditor see all cases; requesters see only owned cases
-(unknown/invisible IDs answer 404). Mutations need CSRF + role + ownership
-where applicable. Docs: `docs/RETROSPECTIVE.md` (audit), `docs/DESIGN_DOCUMENT.md`,
-`docs/INPUT_OUTPUT_DEFINITIONS.md`, `docs/AGENT_EXECUTION_TRACE.md`.
+## Current Limitations
 
-Database-enforced invariants (`sql/14-lifecycle-enforcement.sql`, applied):
-`trg_lifecycle` rejects illegal status writes from ANY writer including n8n
-(mirrors `tools/_lib/lifecycle.js` exactly — verified by
-`web/test/db-consistency.test.mjs`); partial unique index guarantees at most
-one PENDING approval per case even under concurrent duplicate submissions.
-Intake accepts an `Idempotency-Key` header: retries with the same key converge
-on one case without re-calling n8n. Operational backup/restore: `docs/OPERATIONS.md`
-(backup file + tested restore procedure). Security posture + multi-tenant
-migration plan: `docs/SECURITY_AND_TENANCY.md` (local HTTP only — TLS/cookies/
-CORS/least-privilege DB roles required before any LAN exposure).
+BuyWise deliberately distinguishes between implemented capabilities and externally dependent functionality.
+
+- **Provider availability:** Search and commercial evidence depend on provider credentials, quotas, connectivity, and results.
+- **Incomplete commercial data:** Prices, delivery, warranty, payment terms, and budget compliance may remain unavailable.
+- **Currency conversion:** No conversion is performed without a configured exchange-rate source.
+- **Vendor contact:** Third-party directories do not automatically qualify as verified vendor contact channels.
+- **Negotiation:** Real negotiation requires verified offers and contact channels; proposals remain unsent.
+- **Vendor responses:** Re-evaluation requires verified real responses in REAL mode. Manually entered responses in DEMO mode are not treated as verified vendor evidence.
+- **LLM reasoning:** Optional advisory reasoning is not required for scoring or decision gates. Hosted LLM execution requires separate configuration and validation.
+- **eBay:** The integration is not required and may remain unavailable pending provider approval.
+- **Purchasing execution:** The workflow ends at approval and an authorized handoff; it does not issue purchase orders or execute transactions.
+- **Deployment:** The current console is designed for local operation. Production network exposure requires additional deployment hardening.
+
+A thin evidence set can result in `INSUFFICIENT_DATA`, `RESEARCH_REQUIRED`, or `NO_ELIGIBLE_OFFERS`. These outcomes communicate the actual limits of the evidence rather than implying that a purchase recommendation has been verified.
+
+---
+
+## Project Structure
+
+```text
+BuyWise/
+├── docker-compose.yml
+├── .env.example
+├── .gitignore
+├── README.md
+│
+├── sql/
+│   ├── 01-schema.sql
+│   └── ... lifecycle and feature migrations
+│
+├── schemas/
+│   ├── procurement-request.schema.json
+│   ├── product-research-output.schema.json
+│   └── vendor-research-output.schema.json
+│
+├── prompts/
+│   ├── product-research.system.md
+│   └── vendor-research.system.md
+│
+├── tools/
+│   ├── _lib/
+│   │   ├── commercial.js
+│   │   ├── evidence.js
+│   │   ├── scoring.js
+│   │   ├── decision.js
+│   │   ├── negotiation.js
+│   │   ├── reevaluation.js
+│   │   ├── approval.js
+│   │   ├── lifecycle.js
+│   │   └── coordination.js
+│   ├── web-search/
+│   ├── product-search/
+│   ├── product-details/
+│   ├── vendor-search/
+│   └── price-retrieval/
+│
+├── n8n/
+│   └── workflows/
+│       ├── 00-orchestrator-buywise.json
+│       ├── 10-agent-product-research.json
+│       ├── 20-agent-vendor-research.json
+│       ├── 40-agent-review-quality.json
+│       ├── 50-agent-comparison.json
+│       ├── 60-util-scoring-engine.json
+│       ├── 65-agent-decision.json
+│       ├── 70-agent-negotiation.json
+│       ├── 80-agent-reevaluation.json
+│       ├── 90-agent-approval.json
+│       └── ... utility workflows
+│
+├── tests/
+│   ├── test_phase1.py
+│   ├── scoring.unit.test.mjs
+│   ├── decision.unit.test.mjs
+│   ├── negotiation.unit.test.mjs
+│   └── ... integration and policy tests
+│
+├── web/
+│   ├── server.js
+│   ├── package.json
+│   ├── scripts/
+│   ├── test/
+│   └── ... frontend and backend modules
+│
+└── docs/
+    ├── PROJECT_SYNOPSIS.md
+    ├── DESIGN_DOCUMENT.md
+    ├── INPUT_OUTPUT_DEFINITIONS.md
+    ├── AGENT_EXECUTION_TRACE.md
+    ├── CA3_DEMO_GUIDE.md
+    ├── CA3_RUBRIC_EVIDENCE.md
+    ├── CA3_GAP_ANALYSIS.md
+    ├── OPERATIONS.md
+    ├── SECURITY_AND_TENANCY.md
+    └── RETROSPECTIVE.md
+```
+
+*This is a representative structure. File availability and names may vary by repository revision.*
+
+---
+
+## Design Philosophy
+
+BuyWise treats procurement as an evidence-driven workflow rather than a text-generation task.
+
+Its defining principles are:
+
+- **Evidence over assumptions**
+- **Deterministic scoring and decision gates**
+- **Explicit handling of missing information**
+- **Traceable agent coordination**
+- **Persistent and validated lifecycle transitions**
+- **Human-controlled negotiation and approval**
+- **Clear separation between real operations and demonstrations**
+
+The goal is not to force every procurement request to produce a winning product. The goal is to make each result explainable, reproducible, auditable, and honest about what the available evidence can support.
