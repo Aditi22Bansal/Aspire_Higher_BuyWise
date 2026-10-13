@@ -213,3 +213,8 @@ export function deriveChecklist(snap, stages) {
   ];
   return { items, completed: items.filter((i) => i.done).length, total: items.length };
 }
+
+export function formatINR(v) {
+  if (v === null || v === undefined || v === 'unavailable') return 'unavailable';
+  return new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 }).format(Number(v));
+}
